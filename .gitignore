@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+docs/prop65_cache.json
+output/
+*.pdf
+docs/p65chemicalslist.csv
