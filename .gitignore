@@ -5,3 +5,4 @@ docs/prop65_cache.json
 output/
 *.pdf
 docs/p65chemicalslist.csv
+prop65_sds_checker/__pycache__

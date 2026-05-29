@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prop65-sds-checker"
+version = "0.1.0"
+description = "Batch Prop 65 SDS checker — screens SDS PDFs against the OEHHA chemical list"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf==1.27.2.3",
+]
+
+[project.scripts]
+prop65-checker = "prop65_sds_checker.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["prop65_sds_checker*"]
