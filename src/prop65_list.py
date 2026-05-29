@@ -1,16 +1,22 @@
 """
 prop65_list.py
-Fetches and caches the official OEHHA Prop 65 chemical list.
+Loads the OEHHA Prop 65 chemical list from a local CSV file.
+Caches the parsed list to docs/prop65_cache.json for performance.
+
+To update the list:
+  1. Go to: https://oehha.ca.gov/proposition-65/proposition-65-list
+  2. Download the CSV file
+  3. Save it to: docs/p65chemicalslist.csv
+  4. Delete docs/prop65_cache.json to force a fresh parse
+  5. Re-run: python src/main.py
 """
 
 import csv
 import json
 import re
-import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-OEHHA_CSV_URL = "https://oehha.ca.gov/sites/default/files/media/2025-01/p65chemicalslist.csv"
 LOCAL_CSV = Path(__file__).parent.parent / "docs" / "p65chemicalslist.csv"
 CACHE_FILE = Path(__file__).parent.parent / "docs" / "prop65_cache.json"
 CACHE_MAX_AGE_DAYS = 30
@@ -44,57 +50,45 @@ def _parse_csv(content):
     return chemicals
 
 
-def _fetch_csv_from_url(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        content = response.read().decode("utf-8-sig")
-    return _parse_csv(content)
-
-
-def load_prop65_list(force_refresh=False):
+def load_prop65_list():
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    if not force_refresh and CACHE_FILE.exists():
+    # Use cache if fresh
+    if CACHE_FILE.exists():
         with open(CACHE_FILE) as f:
             cached = json.load(f)
         fetched_at = datetime.fromisoformat(cached["fetched_at"])
         if datetime.now() - fetched_at < timedelta(days=CACHE_MAX_AGE_DAYS):
-            print(f"[prop65] Using cached list ({len(cached['chemicals'])} chemicals)")
+            print(f"[prop65] Using cached list ({len(cached['chemicals'])} chemicals, "
+                  f"fetched {fetched_at.strftime('%Y-%m-%d')})")
             return cached["chemicals"]
 
-    if LOCAL_CSV.exists():
-        print(f"[prop65] Loading from local CSV: {LOCAL_CSV}")
-        with open(LOCAL_CSV, encoding="latin-1") as f:
-            content = f.read()
-        chemicals = _parse_csv(content)
-        cache_data = {
-            "fetched_at": datetime.now().isoformat(),
-            "source": str(LOCAL_CSV),
-            "chemicals": chemicals,
-        }
-        with open(CACHE_FILE, "w") as f:
-            json.dump(cache_data, f, indent=2)
-        print(f"[prop65] Cached {len(chemicals)} chemicals")
-        return chemicals
+    # Load from local CSV
+    if not LOCAL_CSV.exists():
+        print("""
+[prop65] ERROR: Prop 65 chemical list not found.
 
-    print(f"[prop65] Fetching Prop 65 list from OEHHA...")
-    try:
-        chemicals = _fetch_csv_from_url(OEHHA_CSV_URL)
-        cache_data = {
-            "fetched_at": datetime.now().isoformat(),
-            "source": OEHHA_CSV_URL,
-            "chemicals": chemicals,
-        }
-        with open(CACHE_FILE, "w") as f:
-            json.dump(cache_data, f, indent=2)
-        print(f"[prop65] Cached {len(chemicals)} chemicals")
-        return chemicals
-    except Exception as e:
-        if CACHE_FILE.exists():
-            print(f"[prop65] WARNING: Fetch failed ({e}). Using stale cache.")
-            with open(CACHE_FILE) as f:
-                return json.load(f)["chemicals"]
-        raise RuntimeError(f"Cannot load Prop 65 list: {e}")
+To install the list:
+  1. Go to: https://oehha.ca.gov/proposition-65/proposition-65-list
+  2. Download the CSV file
+  3. Save it to: docs/p65chemicalslist.csv
+  4. Re-run: python src/main.py
+""")
+        import sys; sys.exit(1)
+
+    print(f"[prop65] Loading from local CSV: {LOCAL_CSV}")
+    with open(LOCAL_CSV, encoding="latin-1") as f:
+        content = f.read()
+    chemicals = _parse_csv(content)
+    cache_data = {
+        "fetched_at": datetime.now().isoformat(),
+        "source": str(LOCAL_CSV),
+        "chemicals": chemicals,
+    }
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache_data, f, indent=2)
+    print(f"[prop65] Cached {len(chemicals)} chemicals")
+    return chemicals
 
 
 def build_lookup(chemicals):

@@ -4,9 +4,9 @@ Batch Prop 65 checker for SDS PDFs.
 
 Usage:
     python src/main.py                        # process all PDFs in input/
-    python src/main.py --refresh-list         # force re-download of OEHHA list
     python src/main.py --input /path/to/pdfs  # custom input directory
     python src/main.py --pdf file.pdf         # single file
+    python src/main.py --output /path/to/out  # custom output directory
 """
 
 import argparse
@@ -33,11 +33,9 @@ def main():
                         help="Output directory for reports (default: output/)")
     parser.add_argument("--pdf", type=Path, default=None,
                         help="Process a single PDF file")
-    parser.add_argument("--refresh-list", action="store_true",
-                        help="Force re-download of OEHHA Prop 65 list")
     args = parser.parse_args()
 
-    prop65_chemicals = load_prop65_list(force_refresh=args.refresh_list)
+    prop65_chemicals = load_prop65_list()
     print(f"[main] Loaded {len(prop65_chemicals)} Prop 65 chemicals\n")
 
     if args.pdf:
@@ -45,7 +43,7 @@ def main():
     else:
         if not args.input.exists():
             print(f"[main] ERROR: Input directory not found: {args.input}")
-            print(f"       Drop SDS PDFs into the 'input/' folder and re-run.")
+            print(f"       Create it and drop SDS PDFs in, then re-run.")
             sys.exit(1)
         pdf_files = sorted(args.input.glob("*.pdf"))
         if not pdf_files:
@@ -63,9 +61,7 @@ def main():
         if doc.extraction_error:
             print(f"     ERROR: {doc.extraction_error}")
         else:
-            print(f"     Pages: {doc.page_count} | "
-                  f"Sections parsed: {len(doc.sections)} | "
-                  f"CAS numbers found: {len(doc.cas_numbers_found) if hasattr(doc, 'cas_numbers_found') else 'n/a'}")
+            print(f"     Pages: {doc.page_count} | Sections parsed: {len(doc.sections)}")
 
         result = check_sds(doc, prop65_chemicals)
 
