@@ -11,6 +11,18 @@ from pathlib import Path
 from checker import CheckResult, ChemicalHit
 
 
+# Why a product lands in the review bucket (shown in the report)
+REVIEW_EXPLANATION = (
+    "The SDS carries a Proposition 65 warning, but the manufacturer did not name "
+    "the specific chemical or CAS number it applies to. The product is therefore "
+    "not confirmed as containing a listed substance — yet the manufacturer has "
+    "asserted a Prop 65 obligation. These need manual review against the full SDS "
+    "and product formulation to identify the substance and determine the warning "
+    "requirement. They are kept out of the Flagged bucket to avoid implying a "
+    "confirmed chemical match."
+)
+
+
 def generate_reports(results: list[CheckResult], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     by_product_dir = output_dir / "by_product"
@@ -31,16 +43,19 @@ def generate_reports(results: list[CheckResult], output_dir: Path) -> None:
 
     total = len(results)
     n_flagged = len(flagged)
-    n_clean = total - n_flagged
     errors = [r for r in results if r.extraction_error]
+    n_review = sum(1 for r in results if r.needs_review and not r.flagged)
+    n_clean = total - n_flagged - n_review - len(errors)
     print(f"\n[reporter] Done. {total} products | {n_flagged} flagged | "
-          f"{n_clean} clean | {len(errors)} errors")
+          f"{n_review} to review | {n_clean} clean | {len(errors)} errors")
 
 
 def _render_master_summary(results: list[CheckResult]) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     flagged = [r for r in results if r.flagged]
-    clean = [r for r in results if not r.flagged and not r.extraction_error]
+    review = [r for r in results if r.needs_review and not r.flagged]
+    clean = [r for r in results
+             if not r.flagged and not r.needs_review and not r.extraction_error]
     errors = [r for r in results if r.extraction_error]
 
     lines = [
@@ -49,6 +64,7 @@ def _render_master_summary(results: list[CheckResult]) -> str:
         f"**Generated:** {now}  ",
         f"**Total PDFs processed:** {len(results)}  ",
         f"**Flagged (Prop 65 substances found):** {len(flagged)}  ",
+        f"**Declarations to review (warning present, chemical not named):** {len(review)}  ",
         f"**Clean (no findings):** {len(clean)}  ",
         f"**Errors (extraction failed):** {len(errors)}  ",
         "",
@@ -70,16 +86,39 @@ def _render_master_summary(results: list[CheckResult]) -> str:
         for r in sorted(flagged, key=lambda x: x.filename):
             high = sum(1 for h in r.hits if h.confidence == "high")
             med = sum(1 for h in r.hits if h.confidence == "medium")
+            dec = sum(1 for h in r.hits if h.confidence == "declared")
             conf_str = f"{high} high / {med} medium"
+            if dec:
+                conf_str += f" / {dec} declared"
             lines.append(
                 f"| [{r.filename}](by_product/{Path(r.filename).stem}_analysis.md) "
                 f"| {len(r.carcinogens)} | {len(r.reproductive_hazards)} "
-                f"| {len(r.hits)} | {conf_str} |"
+                f"| {len(r.substantive_hits)} | {conf_str} |"
             )
         lines.append("")
 
         for r in sorted(flagged, key=lambda x: x.filename):
             lines += _flagged_detail_block(r)
+
+    if review:
+        lines += [
+            "---",
+            "",
+            "## Declarations to Review",
+            "",
+            f"> {REVIEW_EXPLANATION}",
+            "",
+        ]
+        for r in sorted(review, key=lambda x: x.filename):
+            endpoints = "; ".join(h.toxicity for h in r.review_hits)
+            lines += [f"### {r.filename}", ""]
+            lines.append(f"- **Declared endpoint(s):** {endpoints}")
+            for h in r.review_hits:
+                lines.append(f"- **Statement in SDS:**")
+                lines.append(f"  > {h.matched_text}")
+            lines.append("- [ ] Review full SDS Section 3 and Section 15 to identify the substance")
+            lines.append("- [ ] Confirm against the current OEHHA list and product formulation")
+            lines.append("")
 
     if clean:
         lines += [
@@ -194,6 +233,50 @@ def _render_product_report(result: CheckResult) -> str:
                 "",
             ]
 
+    dec_hits = [h for h in result.hits if h.confidence == "declared"]
+    if dec_hits:
+        lines += [
+            "## Manufacturer-Declared Prop 65 (Not an OEHHA List Match)",
+            "",
+            "> These findings come from the manufacturer's own Proposition 65 "
+            "statement in the SDS, **not** from a match against the OEHHA list. "
+            "Treat as the manufacturer's assertion and verify independently.",
+            "",
+            "| Chemical | CAS | Declared Endpoint | Source |",
+            "|----------|-----|-------------------|--------|",
+        ]
+        for h in dec_hits:
+            lines.append(f"| {h.chemical_name} | {h.cas or 'N/A'} | {h.toxicity} | SDS (manufacturer-declared) |")
+        lines.append("")
+        for h in dec_hits:
+            lines += [
+                f"### {h.chemical_name}",
+                f"- **CAS:** {h.cas or 'Not provided'}",
+                f"- **Declared endpoint:** {h.toxicity}",
+                f"- **Basis:** Manufacturer Prop 65 statement (not on OEHHA list)",
+                f"- **Context in SDS:**",
+                f"  > {h.matched_text}",
+                "",
+            ]
+
+    rev_hits = [h for h in result.hits if h.confidence == "review"]
+    if rev_hits:
+        lines += [
+            "## Declaration to Review (Chemical Not Named)",
+            "",
+            "> This product also carries a generic Prop 65 warning where the "
+            "manufacturer did not identify the chemical. It does not confirm a "
+            "listed substance — review the full SDS to identify what it refers to.",
+            "",
+        ]
+        for h in rev_hits:
+            lines += [
+                f"- **Declared endpoint:** {h.toxicity}",
+                f"- **Statement in SDS:**",
+                f"  > {h.matched_text}",
+                "",
+            ]
+
     lines += [
         "---",
         "",
@@ -208,6 +291,9 @@ def _render_product_report(result: CheckResult) -> str:
         lines.append("- [ ] Verify reproductive hazard findings against full SDS Section 3 and Section 15")
         lines.append("- [ ] Assess exposure against MADL thresholds")
         lines.append("- [ ] Determine if Prop 65 reproductive toxicity warning is required")
+    if dec_hits:
+        lines.append("- [ ] Confirm the manufacturer's Prop 65 statement against the current OEHHA list and product formulation")
+        lines.append("- [ ] Treat the declared chemical as in-scope for warning assessment even if absent from the OEHHA list")
     lines += [
         "- [ ] Cross-reference: https://oehha.ca.gov/proposition-65/proposition-65-list",
         "- [ ] Consult EHS counsel if warning obligation is unclear",

@@ -6,3 +6,16 @@ output/
 *.pdf
 docs/p65chemicalslist.csv
 prop65_sds_checker/__pycache__
+
+# macOS
+.DS_Store
+# Python build / packaging artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+# Runtime data (lives in PROP65_DIR, not the repo)
+input/
+output/
+prop65_cache.json
