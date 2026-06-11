@@ -55,7 +55,7 @@ def load_prop65_list():
 
     # Use cache if fresh
     if CACHE_FILE.exists():
-        with open(CACHE_FILE) as f:
+        with open(CACHE_FILE, encoding="utf-8") as f:
             cached = json.load(f)
         fetched_at = datetime.fromisoformat(cached["fetched_at"])
         if datetime.now() - fetched_at < timedelta(days=CACHE_MAX_AGE_DAYS):
@@ -85,7 +85,7 @@ To install the list:
         "source": str(LOCAL_CSV),
         "chemicals": chemicals,
     }
-    with open(CACHE_FILE, "w") as f:
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache_data, f, indent=2)
     print(f"[prop65] Cached {len(chemicals)} chemicals")
     return chemicals
