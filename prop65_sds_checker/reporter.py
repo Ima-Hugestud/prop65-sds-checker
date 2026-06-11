@@ -17,7 +17,7 @@ def generate_reports(results: list[CheckResult], output_dir: Path) -> None:
     by_product_dir.mkdir(exist_ok=True)
 
     summary_path = output_dir / "master_summary.md"
-    with open(summary_path, "w") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         f.write(_render_master_summary(results))
     print(f"[reporter] Master summary -> {summary_path}")
 
@@ -25,7 +25,7 @@ def generate_reports(results: list[CheckResult], output_dir: Path) -> None:
     for result in flagged:
         stem = Path(result.filename).stem
         report_path = by_product_dir / f"{stem}_analysis.md"
-        with open(report_path, "w") as f:
+        with open(report_path, "w", encoding="utf-8") as f:
             f.write(_render_product_report(result))
         print(f"[reporter] Product report -> {report_path}")
 
