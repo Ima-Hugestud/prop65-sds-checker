@@ -89,9 +89,12 @@ prop65-checker --output /path/to/reports   # custom output directory
 1. Loads the OEHHA Prop 65 list from local CSV (or 30-day cache)
 2. Extracts text from each PDF using PyMuPDF
 3. Parses GHS SDS sections — prioritizes Sections 2, 3, 8, 11, 15
-4. Two-pass matching:
-   - Pass 1 — CAS number match (high confidence)
+4. Three-pass matching:
+   - Pass 1 — CAS number match against OEHHA list (high confidence)
    - Pass 2 — Chemical name match, word-boundary regex (medium confidence)
+   - Pass 3 — Manufacturer-declared Prop 65 statement in the SDS (declared) —
+     captures chemicals the manufacturer themselves flags under Proposition 65,
+     even when the substance is **not** on the OEHHA list
 5. Generates reports only for flagged products
 
 ---
@@ -100,8 +103,28 @@ prop65-checker --output /path/to/reports   # custom output directory
 
 | Level | Method | Recommended Action |
 |-------|--------|--------------------|
-| High | CAS number match | Assess warning obligation against NSRL/MADL thresholds |
-| Medium | Chemical name match | Verify manually against SDS before acting |
+| High | CAS number match against OEHHA list | Assess warning obligation against NSRL/MADL thresholds |
+| Medium | Chemical name match against OEHHA list | Verify manually against SDS before acting |
+| Declared | Manufacturer names a specific chemical/CAS under Prop 65 (not an OEHHA list match) | Treat as the manufacturer's assertion; confirm against the current OEHHA list and product formulation |
+| Review | Manufacturer makes a generic Prop 65 warning but names no chemical | Routed to a separate **Declarations to Review** bucket (not flagged); identify the substance by hand against the full SDS |
+
+**On the Declared/Review tiers:** the trigger is an explicit Proposition 65 declaration by
+the manufacturer (e.g. a "California Proposition 65" subsection in Section 15, or
+a "known to the State of California to cause..." warning), **not** a generic
+carcinogenicity statement. A manufacturer calling something carcinogenic (IARC/NTP/GHS
+H350) is not the same as a Prop 65 declaration and does not trigger this pass.
+
+When the declaration **names a chemical/CAS**, it is recorded as a `declared` finding
+and the product is flagged. When the declaration is **generic** (a Prop 65 warning with
+no chemical identified), the product is *not* flagged — it is routed to a separate
+**Declarations to Review** bucket, because the manufacturer has asserted an obligation
+but no specific substance is confirmed. This keeps unconfirmed statements from implying
+a chemical match while still surfacing them for manual review.
+
+Common "this product does not contain a Prop 65 chemical" boilerplate is suppressed
+via negation detection. Where negation language sits near a declaration, the pass
+errs toward suppression — a rare real positive with negation words nearby may be
+missed, which is the intended tradeoff for a screening tool.
 
 ---
 
@@ -119,6 +142,9 @@ OEHHA updates the list periodically. To refresh:
 
 - Scanned/image PDFs are not supported — requires machine-readable text
 - Medium-confidence name matches require human verification
+- Declared findings reflect the manufacturer's own statement and are only as
+  reliable as the SDS; the parser may miss declarations with unusual phrasing,
+  and suppresses declarations near "does not contain" boilerplate
 - Not a legal compliance determination — consult qualified EHS counsel
 - OEHHA list must be manually downloaded and updated
 
