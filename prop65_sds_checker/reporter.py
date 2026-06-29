@@ -23,6 +23,31 @@ REVIEW_EXPLANATION = (
 )
 
 
+# A bold, RED, eye-catching flag with the reason and where to look in the SDS.
+# The red emoji renders on GitHub (which strips CSS); the <span> gives true red in
+# Obsidian and other HTML-aware markdown renderers. Bold via markdown.
+_FLAG_RED = "#c0392b"
+
+
+def _flag_banner(h: ChemicalHit) -> str:
+    where = h.source_location or "SDS Section 15"
+    cas = h.cas if h.cas else "withheld / proprietary"
+    return (
+        f'> \U0001F534 **<span style="color:{_FLAG_RED}">FLAG \u2014 Prop 65 '
+        f'{h.toxicity}</span>** \u2014 manufacturer identifies '
+        f'**{h.chemical_name}** (CAS {cas}).  '
+        f'**Where to look:** {where}.'
+    )
+
+
+def _flag_banners(result: CheckResult) -> list[str]:
+    """One red FLAG line per substantive (product-flagging) hit."""
+    out = []
+    for h in result.substantive_hits:
+        out.append(_flag_banner(h))
+    return out
+
+
 def generate_reports(results: list[CheckResult], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     by_product_dir = output_dir / "by_product"
@@ -147,6 +172,9 @@ def _render_master_summary(results: list[CheckResult]) -> str:
 
 def _flagged_detail_block(result: CheckResult) -> list[str]:
     lines = [f"### {result.filename}", ""]
+    banners = _flag_banners(result)
+    if banners:
+        lines += banners + [""]
     if result.carcinogens:
         lines.append(f"**Carcinogens ({len(result.carcinogens)}):**")
         for h in result.carcinogens:
@@ -179,9 +207,13 @@ def _render_product_report(result: CheckResult) -> str:
         "> Medium-confidence matches are name-based and require human verification.",
         "> This is not a legal compliance determination.",
         "",
-        "---",
-        "",
     ]
+
+    banners = _flag_banners(result)
+    if banners:
+        lines += banners + [""]
+
+    lines += ["---", ""]
 
     if result.cas_numbers_found:
         lines += ["## CAS Numbers Identified in Document", ""]
