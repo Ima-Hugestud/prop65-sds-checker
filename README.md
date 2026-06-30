@@ -1,3 +1,4 @@
+
 # Prop 65 SDS Batch Checker
 
 Batch processes Safety Data Sheet (SDS) PDFs against the official California Proposition 65 chemical list published by OEHHA. Generates individual reports only for products where Prop 65 substances are identified, plus a master summary across all processed PDFs.
@@ -40,6 +41,19 @@ setx PROP65_DIR "%USERPROFILE%\prop65-checker"
 Restart terminal again, then download the Prop 65 list (see First Run below) and run:
 
 prop65-checker
+
+---
+
+## Updating the Tool
+
+The screener installs via pipx. After changes are merged, pull the latest:
+
+    pipx install git+https://github.com/Ima-Hugestud/prop65-sds-checker --force
+
+To install from a local working copy (e.g. testing a branch before merge):
+
+    cd ~/prop65-sds-checker
+    pipx install . --force
 
 ---
 
