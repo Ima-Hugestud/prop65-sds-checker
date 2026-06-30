@@ -21,7 +21,7 @@ PRIORITY_SECTIONS = {
 }
 
 SECTION_PATTERN = re.compile(
-    r"(?:^|\n)\s*(?:SECTION\s+)?(\d{1,2})[\s.:–\-]+([A-Z][^\n]{2,60})",
+    r"(?:^|\n)[\s=*#-]*(?:SECTION\s+)?(\d{1,2})[\s.:–\-]+([A-Z][^\n]{2,60})",
     re.IGNORECASE,
 )
 
@@ -68,20 +68,44 @@ def extract_sds(pdf_path: Path) -> SDSDocument:
     return doc
 
 
+# Leading keywords of the 16 standard GHS SDS section titles. A header match is
+# only accepted if its title text contains one of these, which rejects page-footer
+# dates ("8 December, 2025" -> bogus "Section 8") and digit-leading chemical names
+# ("1-Chloro-..." -> bogus "Section 1") that otherwise masquerade as headers.
+_GHS_TITLE_KEYWORDS = re.compile(
+    r"identif|hazard|composition|ingredient|first|fire|accidental|release|"
+    r"handling|storage|exposure|personal protection|physical|chemical propert|"
+    r"stabilit|reactiv|toxicolog|ecolog|disposal|transport|regulator|other",
+    re.IGNORECASE,
+)
+
+
 def _parse_sections(text: str) -> dict[int, str]:
     """
     Split SDS text into numbered sections.
     Returns {section_number: section_text}.
+
+    Header matches are gated two ways so stray lines can't masquerade as section
+    headers: (1) the title text must contain a real GHS section keyword, and
+    (2) section numbers must increase monotonically (GHS sections 1..16 appear
+    once, in order). Together these stop a date footer or a chemical name that
+    begins with a digit from carving up a section.
     """
     sections = {}
-    matches = list(SECTION_PATTERN.finditer(text))
+    candidates = [m for m in SECTION_PATTERN.finditer(text)
+                  if _GHS_TITLE_KEYWORDS.search(m.group(2))]
 
-    for i, match in enumerate(matches):
-        sec_num = int(match.group(1))
-        if 1 <= sec_num <= 16:
-            start = match.start()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-            sections[sec_num] = text[start:end].strip()
+    accepted = []
+    last_num = 0
+    for m in candidates:
+        sec_num = int(m.group(1))
+        if 1 <= sec_num <= 16 and sec_num > last_num:
+            accepted.append((sec_num, m.start()))
+            last_num = sec_num
+
+    for i, (sec_num, start) in enumerate(accepted):
+        end = accepted[i + 1][1] if i + 1 < len(accepted) else len(text)
+        sections[sec_num] = text[start:end].strip()
 
     return sections
 

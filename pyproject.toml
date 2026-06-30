@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prop65-sds-checker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Batch Prop 65 SDS checker — screens SDS PDFs against the OEHHA chemical list"
 requires-python = ">=3.10"
 dependencies = [

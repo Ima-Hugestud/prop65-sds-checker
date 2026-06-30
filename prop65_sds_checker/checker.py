@@ -28,9 +28,87 @@ _ENDPOINT_PATTERNS = {
 # If any of these sit near the declaration, treat it as "no Prop 65" boilerplate
 _NEGATION = re.compile(
     r"(does\s+not\s+contain|do\s+not\s+contain|not\s+subject|not\s+applicable|"
-    r"free\s+of|absence\s+of|no\s+.{0,20}(chemical|substance)s?\s+(known|listed))",
+    r"free\s+of|absence\s+of|to\s+the\s+best\s+of\s+our\s+knowledge|"
+    r"no\s+chemicals\s+at|require\s+reporting\s+under|"
+    r"no\s+.{0,20}(chemical|substance)s?\s+(known|listed))",
     re.IGNORECASE,
 )
+
+# --- Named-declaration capture (manufacturer names a chemical, CAS or not) ------
+
+# OEHHA-standardized safe-harbor warning. Names the chemical and the endpoint
+# independent of whether a CAS number was disclosed.
+_SAFE_HARBOR = re.compile(
+    r"expose you to .*?including\s*\[?(?P<chem>[^\]\.;]+?)\]?,?\s+"
+    r"which (?:is|are) known to the State of California to cause\s+"
+    r"(?P<endpoint>cancer|birth defects|reproductive harm)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# "Proposition 65 - <Category> (>0.0%):" list. The body names the chemical unless
+# it is the "no chemicals / to the best of our knowledge" boilerplate.
+_P65_CATEGORY = re.compile(
+    r"Proposition\s*65\s*[-\u2013]\s*"
+    r"(?P<cat>Carcinogen|Developmental|Female\s+Repro|Male\s+Repro)"
+    r"[^():]*\([^)]*\)\s*:?\s*(?P<body>.*?)"
+    r"(?=Proposition\s*65|SECTION\s+16|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_P65_BOILERPLATE = re.compile(
+    r"to the best of our knowledge|no chemicals|not applicable|none\b",
+    re.IGNORECASE,
+)
+
+_ENDPOINT_CANON = {
+    "cancer": "cancer",
+    "carcinogen": "cancer",
+    "birth defects": "developmental/reproductive toxicity",
+    "reproductive harm": "developmental/reproductive toxicity",
+    "developmental": "developmental/reproductive toxicity",
+    "female repro": "developmental/reproductive toxicity",
+    "male repro": "developmental/reproductive toxicity",
+}
+
+
+def _clean_chem(raw: str) -> str:
+    """Tidy a captured chemical name; reject sentence-length over-captures."""
+    name = re.sub(r"\s+", " ", raw).strip(" .,:;[]")
+    if not (3 <= len(name) <= 90):
+        return ""
+    return name
+
+
+def _extract_named_declarations(text: str):
+    """
+    Yield (chemical_name, canonical_endpoint, source_label, snippet) for each
+    chemical the manufacturer NAMES in a Prop 65 declaration -- via the safe-harbor
+    warning or a '(>0.0%)' category list. Independent of CAS disclosure.
+    """
+    out = []
+    for m in _SAFE_HARBOR.finditer(text):
+        chem = _clean_chem(m.group("chem"))
+        if not chem:
+            continue
+        endpoint = _ENDPOINT_CANON.get(m.group("endpoint").lower().strip(),
+                                       "manufacturer-declared")
+        snippet = "..." + re.sub(r"\s+", " ", m.group(0)).strip() + "..."
+        out.append((chem, endpoint,
+                    "SDS Section 15 \u00b7 Prop 65 safe-harbor warning", snippet))
+
+    for m in _P65_CATEGORY.finditer(text):
+        body = m.group("body").strip()
+        if not body or _P65_BOILERPLATE.search(body):
+            continue
+        cat = m.group("cat").strip()
+        endpoint = _ENDPOINT_CANON.get(cat.lower(), "manufacturer-declared")
+        label = f"SDS Section 15 \u00b7 Prop 65 {cat} list (>0.0%)"
+        for piece in re.split(r";|,(?=\s*[A-Z])", body):
+            chem = _clean_chem(piece)
+            if chem and not _P65_BOILERPLATE.search(chem):
+                snippet = f"...Proposition 65 - {cat} (>0.0%): {chem}..."
+                out.append((chem, endpoint, label, snippet))
+    return out
 
 
 @dataclass
@@ -42,6 +120,7 @@ class ChemicalHit:
     match_method: str
     matched_text: str
     confidence: str
+    source_location: str = ""   # where in the SDS this was found (for the report)
 
 
 @dataclass
@@ -120,6 +199,7 @@ def check_sds(doc: SDSDocument, prop65_chemicals: list[dict]) -> CheckResult:
                     match_method="cas",
                     matched_text=snippet,
                     confidence="high",
+                    source_location="SDS Section 3 (composition) \u00b7 CAS match",
                 ))
 
     # Pass 2: Chemical name matching (medium confidence)
@@ -141,6 +221,7 @@ def check_sds(doc: SDSDocument, prop65_chemicals: list[dict]) -> CheckResult:
                 match_method="name",
                 matched_text=snippet,
                 confidence="medium",
+                source_location="SDS Section 3 (composition) \u00b7 name match",
             ))
 
     # Pass 3: manufacturer-declared Prop 65 (may not be on the OEHHA list)
@@ -157,10 +238,17 @@ def check_sds(doc: SDSDocument, prop65_chemicals: list[dict]) -> CheckResult:
 def _find_declared_prop65(doc: SDSDocument, seen_cas: set,
                           window_chars: int = 220) -> list[ChemicalHit]:
     """
-    Capture the manufacturer's own Prop 65 declaration from the SDS, even when
-    the chemical is not on the OEHHA list. Records named chemicals/CAS when
-    present, otherwise a single product-level declaration. Suppresses the common
-    "does not contain a Prop 65 chemical" boilerplate via negation detection.
+    Capture the manufacturer's own Prop 65 declaration from the SDS, even when the
+    chemical is not on the OEHHA list. Three tiers, most specific first:
+
+      1. NAMED declaration -> confidence "declared" (FLAGS the product). The
+         manufacturer names a chemical via the safe-harbor warning or a "(>0.0%)"
+         category list. Fires even when the CAS is withheld/proprietary.
+      2. CAS inside a Prop 65 window not already captured -> "declared".
+      3. GENERIC statement, no chemical named anywhere -> "review" (does NOT flag),
+         emitted only if tiers 1-2 found nothing, so a real finding is never buried.
+
+    "does not contain ..." boilerplate is suppressed via negation detection.
     """
     hits: list[ChemicalHit] = []
 
@@ -174,50 +262,74 @@ def _find_declared_prop65(doc: SDSDocument, seen_cas: set,
     # Collapse whitespace so wrapped lines don't defeat the phrase patterns
     text = re.sub(r"\s+", " ", text)
 
-    emitted_generic = False
+    seen_names: set = set()
+
+    # Tier 1: named declarations (flag even with a withheld CAS)
+    for chem, endpoint, source, snippet in _extract_named_declarations(text):
+        key = chem.lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        hits.append(ChemicalHit(
+            chemical_name=chem,
+            cas="",
+            toxicity=endpoint,
+            date_listed="n/a (manufacturer-declared)",
+            match_method="manufacturer_declared",
+            matched_text=snippet,
+            confidence="declared",
+            source_location=source,
+        ))
+
+    # Tier 2: a CAS sitting in a Prop 65 window that Pass 1/2 didn't already catch
     for m in PROP65_DECLARATION.finditer(text):
         start = max(0, m.start() - window_chars)
         end = min(len(text), m.end() + window_chars)
         window = text[start:end]
-
         if _NEGATION.search(window):
-            continue                          # "does not contain..." boilerplate
-
+            continue
         endpoints = [label for label, pat in _ENDPOINT_PATTERNS.items()
                      if pat.search(window)]
         toxicity = ", ".join(endpoints) if endpoints \
             else "manufacturer-declared (endpoint unspecified)"
-        snippet = "..." + window.strip() + "..."
-
-        raw_cas = extract_cas_numbers(window)
-        new_cas = [c for c in raw_cas if c not in seen_cas]
-        if new_cas:
-            for cas in new_cas:
-                seen_cas.add(cas)
-                hits.append(ChemicalHit(
-                    chemical_name="(manufacturer-declared Prop 65 chemical)",
-                    cas=cas,
-                    toxicity=toxicity,
-                    date_listed="n/a (not on OEHHA list)",
-                    match_method="manufacturer_declared",
-                    matched_text=snippet,
-                    confidence="declared",
-                ))
-        elif raw_cas:
-            # Every CAS in this declaration was already captured by Pass 1/2;
-            # the declaration adds nothing new, so don't emit a generic hit.
-            continue
-        elif not emitted_generic:
-            emitted_generic = True
+        for cas in extract_cas_numbers(window):
+            if cas in seen_cas:
+                continue
+            seen_cas.add(cas)
             hits.append(ChemicalHit(
-                chemical_name="(unspecified — manufacturer Prop 65 statement)",
+                chemical_name="(manufacturer-declared Prop 65 chemical)",
+                cas=cas,
+                toxicity=toxicity,
+                date_listed="n/a (not on OEHHA list)",
+                match_method="manufacturer_declared",
+                matched_text="..." + window.strip() + "...",
+                confidence="declared",
+                source_location="SDS Section 15 \u00b7 CAS within Prop 65 declaration",
+            ))
+
+    # Tier 3: generic statement with no chemical named anywhere -> review only
+    if not hits:
+        for m in PROP65_DECLARATION.finditer(text):
+            start = max(0, m.start() - window_chars)
+            end = min(len(text), m.end() + window_chars)
+            window = text[start:end]
+            if _NEGATION.search(window):
+                continue
+            endpoints = [label for label, pat in _ENDPOINT_PATTERNS.items()
+                         if pat.search(window)]
+            toxicity = ", ".join(endpoints) if endpoints \
+                else "manufacturer-declared (endpoint unspecified)"
+            hits.append(ChemicalHit(
+                chemical_name="(unspecified \u2014 manufacturer Prop 65 statement)",
                 cas="",
                 toxicity=toxicity,
                 date_listed="n/a (not on OEHHA list)",
                 match_method="manufacturer_declared_generic",
-                matched_text=snippet,
+                matched_text="..." + window.strip() + "...",
                 confidence="review",
+                source_location="SDS Section 15 \u00b7 generic Prop 65 statement",
             ))
+            break
 
     return hits
 
